@@ -623,6 +623,43 @@ pub async fn run(
     let startup_start = std::time::Instant::now();
     let raw_config = xai_grok_shell::config::load_effective_config()
         .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
+    let external_provider = args.provider.as_deref().map(|provider| {
+        let configured = raw_config
+            .get("external_providers")
+            .and_then(|providers| providers.get(provider));
+        match configured {
+            Some(config) => {
+                let command = config.get("command").and_then(toml::Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("External provider '{provider}' requires a string command"))?
+                    .to_string();
+                let args = config.get("args").map(|value| {
+                    value.as_array()
+                        .ok_or_else(|| anyhow::anyhow!("External provider '{provider}' args must be an array"))?
+                        .iter()
+                        .map(|arg| arg.as_str().map(str::to_string).ok_or_else(|| anyhow::anyhow!("External provider '{provider}' args must contain strings")))
+                        .collect::<anyhow::Result<Vec<_>>>()
+                }).transpose()?.unwrap_or_default();
+                let env = config.get("env").map(|value| {
+                    value.as_table()
+                        .ok_or_else(|| anyhow::anyhow!("External provider '{provider}' env must be a table"))?
+                        .iter()
+                        .map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())).ok_or_else(|| anyhow::anyhow!("External provider '{provider}' env values must be strings")))
+                        .collect::<anyhow::Result<Vec<_>>>()
+                }).transpose()?.unwrap_or_default();
+                let cwd = config.get("cwd").map(|value| {
+                    value.as_str().map(std::path::PathBuf::from).ok_or_else(|| anyhow::anyhow!("External provider '{provider}' cwd must be a string"))
+                }).transpose()?;
+                Ok((command, args, env, cwd))
+            }
+            None if provider == "cursor" => Ok((
+                "cursor-agent".to_string(),
+                vec!["acp".to_string()],
+                Vec::new(),
+                None,
+            )),
+            None => anyhow::bail!("External provider '{provider}' is not configured"),
+        }
+    }).transpose()?;
     let grok_com_config = match xai_grok_shell::agent::config::Config::new_from_toml_cfg(
         &raw_config,
     ) {
@@ -921,7 +958,18 @@ pub async fn run(
         startup_failure::ConnectAttempt::First,
         &timer,
         async {
-            if use_leader {
+            if let Some(provider) = external_provider {
+                let (command, args, env, cwd) = provider;
+                crate::acp::connect_via_external_agent(
+                    &cancel,
+                    connect_flags,
+                    &command,
+                    &args,
+                    &env,
+                    cwd.as_deref(),
+                )
+                .await
+            } else if use_leader {
                 crate::acp::connect_via_leader(&cancel, connect_flags, &raw_config).await
             } else {
                 crate::acp::connect(&cancel, connect_flags).await

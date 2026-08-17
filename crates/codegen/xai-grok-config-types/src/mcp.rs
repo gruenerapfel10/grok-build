@@ -8,6 +8,18 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use xai_grok_mcp::oauth_config::McpOAuthConfig;
 
+/// Command configuration for an external ACP agent provider.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalProviderConfig {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
 /// serde default helper. Kept module-local rather than shared — the `pool`
 /// module keeps its own copy for `PoolConfig`.
 fn default_true() -> bool {

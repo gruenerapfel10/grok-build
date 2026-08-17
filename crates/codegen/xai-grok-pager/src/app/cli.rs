@@ -435,6 +435,9 @@ pub struct PagerArgs {
     /// Working directory.
     #[arg(long)]
     pub cwd: Option<PathBuf>,
+    /// Use an external ACP agent provider.
+    #[arg(long, value_name = "ID")]
+    pub provider: Option<String>,
     /// Use a custom leader socket path instead of the default `~/.grok/leader.sock`.
     #[arg(
         long = "leader-socket",

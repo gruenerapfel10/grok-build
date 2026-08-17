@@ -3,6 +3,7 @@
 //! Handles spawning the agent process, initializing the protocol,
 //! authenticating, and providing the channel for communication.
 
+mod child_stdio;
 pub mod leader_bridge;
 pub mod meta;
 pub mod model_state;
@@ -113,6 +114,8 @@ pub struct AcpConnection {
     /// mode builds a dedicated one off the same local `auth.json`. Either way it
     /// resolves a fresh bearer per request via the refresh chain.
     pub auth_manager: std::sync::Arc<xai_grok_shell::auth::AuthManager>,
+    /// Keeps an external ACP child alive for the lifetime of the connection.
+    _external_child: Option<child_stdio::ChildProcessGuard>,
 }
 
 /// CLI flags that affect agent configuration, threaded from PagerArgs.
@@ -254,6 +257,7 @@ pub async fn connect(cancel: &CancellationToken, flags: ConnectFlags) -> Result<
         cancel_rewind_enabled,
         session_recap_available,
         auth_manager,
+        _external_child: None,
     })
 }
 
@@ -387,6 +391,77 @@ pub async fn connect_via_leader(
         cancel_rewind_enabled,
         session_recap_available,
         auth_manager,
+        _external_child: None,
+    })
+}
+
+/// Connect to an external ACP agent over a child process's standard streams.
+pub async fn connect_via_external_agent(
+    cancel: &CancellationToken,
+    flags: ConnectFlags,
+    command: &str,
+    args: &[String],
+    env: &[(String, String)],
+    cwd: Option<&std::path::Path>,
+) -> Result<AcpConnection> {
+    startup::enter(StartupPhase::LoadConfig);
+    let raw_config = xai_grok_shell::config::load_effective_config()
+        .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
+    let agent_config = AgentConfig::new_from_toml_cfg(&raw_config)
+        .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
+
+    let bridge = child_stdio::spawn_child_acp(command, args, env, cwd, cancel.clone()).await?;
+    let (tx, rx) = (bridge.channel.tx, bridge.channel.rx);
+
+    startup::enter(StartupPhase::AcpInitialize);
+    let request = acp::InitializeRequest::new(acp::ProtocolVersion::V1).client_capabilities(
+        acp::ClientCapabilities::new()
+            .fs(acp::FileSystemCapabilities::new()
+                .read_text_file(flags.fs_read)
+                .write_text_file(flags.fs_write))
+            .terminal(flags.terminal)
+            .meta(client_capabilities_meta(&flags).as_object().cloned()),
+    );
+    let response: acp::InitializeResponse = acp_send(request, &tx).await?;
+    let auth_methods = response.auth_methods;
+    let available_commands = parse_available_commands(response.meta.as_ref());
+
+    if let Some(method) = auth_methods
+        .iter()
+        .find(|method| method.id().0.as_ref() == "cursor_login")
+    {
+        startup::enter(StartupPhase::EagerAuth);
+        let _: acp::AuthenticateResponse =
+            acp_send(acp::AuthenticateRequest::new(method.id().clone()), &tx).await?;
+    }
+
+    let login_label = auth_methods.first().map(|method| method.name().to_string());
+    let login_method_id = auth_methods.first().map(|method| method.id().clone());
+    let auth_manager = std::sync::Arc::new(xai_grok_shell::auth::AuthManager::new(
+        &xai_grok_shell::util::grok_home::grok_home(),
+        agent_config.grok_com_config,
+    ));
+
+    Ok(AcpConnection {
+        tx,
+        rx,
+        // TODO external model list
+        models: ModelState::default(),
+        is_grok_shell: false,
+        auth_methods,
+        cancel: bridge.cancel,
+        agent_thread: None,
+        available_commands,
+        needs_login: false,
+        login_label,
+        login_method_id,
+        auth_start_mode: AuthStartMode::Command,
+        auth_meta: None,
+        leader_status_rx: None,
+        cancel_rewind_enabled: false,
+        session_recap_available: false,
+        auth_manager,
+        _external_child: Some(bridge.child),
     })
 }
 
