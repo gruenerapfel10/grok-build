@@ -426,13 +426,17 @@ pub async fn connect_via_external_agent(
     let auth_methods = response.auth_methods;
     let available_commands = parse_available_commands(response.meta.as_ref());
 
-    if let Some(method) = auth_methods
-        .iter()
-        .find(|method| method.id().0.as_ref() == "cursor_login")
-    {
+    // Authenticate with the first advertised method (e.g. cursor_login,
+    // opencode-login). External agents hold their own subscription login, so
+    // this is a no-op when already signed in. Tolerate an error and continue:
+    // a genuinely unauthenticated agent surfaces the need on the first prompt.
+    if let Some(method) = auth_methods.first() {
         startup::enter(StartupPhase::EagerAuth);
-        let _: acp::AuthenticateResponse =
-            acp_send(acp::AuthenticateRequest::new(method.id().clone()), &tx).await?;
+        let auth_result: std::result::Result<acp::AuthenticateResponse, acp::Error> =
+            acp_send(acp::AuthenticateRequest::new(method.id().clone()), &tx).await;
+        if let Err(e) = auth_result {
+            tracing::warn!(method = %method.id().0, error = %e, "external provider authenticate failed; continuing");
+        }
     }
 
     let login_label = auth_methods.first().map(|method| method.name().to_string());
