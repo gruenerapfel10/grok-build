@@ -66,26 +66,27 @@ fn flag_takes_value(flag: &str) -> bool {
     value_taking_flag_tokens().contains(flag)
 }
 
-/// Rebuild argv (without the binary name) for reopening `session_id` in the
-/// requested screen mode.
+/// Which one-shot flags a relaunch argv rebuild strips beyond the shared
+/// session-selection / prompt drops.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RelaunchArgFilter {
+    /// Drop `--minimal` / `--fullscreen`; the caller re-appends the right one.
+    /// `false` keeps the current mode flags for a same-mode relaunch.
+    pub drop_screen_mode: bool,
+    /// Drop `--provider <id>` / `--provider=<id>`; the caller re-appends the
+    /// selected provider (or nothing, for native Grok).
+    pub drop_provider: bool,
+}
+
+/// Shared argv rebuild for every relaunch path.
 ///
-/// Strips prior session-selection / mode flags, one-shot session-creation
-/// directives, and any bare positional prompt so a cold-start
-/// `grok "do the thing"` does not re-submit on resume. Keeps everything else
-/// (e.g. `--no-leader`, `--model`, endpoint overrides) intact, including the
-/// value token that follows value-taking flags.
-///
-/// One-shot startup directives must not survive into the rebuilt argv:
-/// `--session-id` combined with the appended `--resume` (without
-/// `--fork-session`) is rejected at startup (`SessionIdRequiresFork`), so the
-/// relaunched process would exit immediately; a kept `--worktree` /
-/// `--worktree-ref` would create a *second* worktree on relaunch; a kept
-/// `--restore-code` would re-checkout the original session commit. All of
-/// them already did their job in the process being replaced.
-pub(crate) fn build_screen_mode_relaunch_args(
+/// Always strips session-selection flags, one-shot session-creation
+/// directives, and the bare positional prompt so a relaunch never re-submits
+/// a cold-start prompt or creates a second worktree. `filter` adds the
+/// per-path drops that the caller rebinds itself.
+fn strip_relaunch_args(
     current_args: impl IntoIterator<Item = impl AsRef<OsStr>>,
-    session_id: &str,
-    want_minimal: bool,
+    filter: RelaunchArgFilter,
 ) -> Vec<OsString> {
     let mut iter = current_args
         .into_iter()
@@ -100,7 +101,7 @@ pub(crate) fn build_screen_mode_relaunch_args(
 
         // `--` ends flag parsing: everything after it is positional, i.e. the
         // prompt, which must not re-fire on resume. Drop the separator too —
-        // keeping it would make the appended `--resume <id>` positional.
+        // keeping it would make an appended `--resume <id>` positional.
         if s == "--" {
             break;
         }
@@ -108,18 +109,20 @@ pub(crate) fn build_screen_mode_relaunch_args(
         // Boolean / no-value flags to drop. `--restore-code` is a one-shot
         // resume directive (checkout already happened in the old process).
         // `--worktree` (optional-value) is handled below with the
-        // value-taking drops. Both screen-mode flags go: the right one is
-        // re-appended below, and a stale opposite would either trip the clap
-        // `--minimal`/`--fullscreen` conflict or fight the requested mode.
+        // value-taking drops. Both screen-mode flags go when the caller
+        // rebinds them: the right one is re-appended by the caller, and a
+        // stale opposite would either trip the clap `--minimal`/`--fullscreen`
+        // conflict or fight the requested mode.
         if matches!(
             s.as_ref(),
-            "--minimal"
-                | "--fullscreen"
-                | "--continue"
-                | "-c"
-                | "--fork-session"
-                | "--restore-code"
+            "--continue" | "-c" | "--fork-session" | "--restore-code"
         ) {
+            continue;
+        }
+        if filter.drop_screen_mode && matches!(s.as_ref(), "--minimal" | "--fullscreen") {
+            continue;
+        }
+        if filter.drop_provider && s.starts_with("--provider=") {
             continue;
         }
 
@@ -136,12 +139,12 @@ pub(crate) fn build_screen_mode_relaunch_args(
         }
 
         // Session-selection / one-shot session-creation flags with an
-        // optional/required following value — drop flag and value; we rebind
-        // via a fresh `--resume <id>` below. `--session-id` would make the
-        // appended `--resume` an invalid combo (SessionIdRequiresFork) and
-        // kill the relaunch at startup; `--worktree`/`--worktree-ref` would
-        // create a second worktree.
-        if matches!(
+        // optional/required following value — drop flag and value; callers
+        // rebind via a fresh `--resume <id>` where relevant. `--session-id`
+        // would make an appended `--resume` an invalid combo
+        // (SessionIdRequiresFork) and kill the relaunch at startup;
+        // `--worktree`/`--worktree-ref` would create a second worktree.
+        let drop_with_value = matches!(
             s.as_ref(),
             "--resume"
                 | "-r"
@@ -152,7 +155,8 @@ pub(crate) fn build_screen_mode_relaunch_args(
                 | "-w"
                 | "--worktree-ref"
                 | "--ref"
-        ) {
+        ) || (filter.drop_provider && s == "--provider");
+        if drop_with_value {
             if let Some(next) = iter.peek() {
                 let ns = next.to_string_lossy();
                 if !ns.starts_with('-') {
@@ -181,7 +185,37 @@ pub(crate) fn build_screen_mode_relaunch_args(
         // the prompt.
         continue;
     }
+    out
+}
 
+/// Rebuild argv (without the binary name) for reopening `session_id` in the
+/// requested screen mode.
+///
+/// Strips prior session-selection / mode flags, one-shot session-creation
+/// directives, and any bare positional prompt so a cold-start
+/// `grok "do the thing"` does not re-submit on resume. Keeps everything else
+/// (e.g. `--no-leader`, `--model`, endpoint overrides) intact, including the
+/// value token that follows value-taking flags.
+///
+/// One-shot startup directives must not survive into the rebuilt argv:
+/// `--session-id` combined with the appended `--resume` (without
+/// `--fork-session`) is rejected at startup (`SessionIdRequiresFork`), so the
+/// relaunched process would exit immediately; a kept `--worktree` /
+/// `--worktree-ref` would create a *second* worktree on relaunch; a kept
+/// `--restore-code` would re-checkout the original session commit. All of
+/// them already did their job in the process being replaced.
+pub(crate) fn build_screen_mode_relaunch_args(
+    current_args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+    session_id: &str,
+    want_minimal: bool,
+) -> Vec<OsString> {
+    let mut out = strip_relaunch_args(
+        current_args,
+        RelaunchArgFilter {
+            drop_screen_mode: true,
+            drop_provider: false,
+        },
+    );
     out.push(OsString::from("--resume"));
     out.push(OsString::from(session_id));
     // Keep a CLI mode flag for hand-pasted resume hints that omit GROK_SCREEN_MODE.
@@ -295,6 +329,105 @@ pub(crate) fn exec_screen_mode_relaunch(session_id: &str, want_minimal: bool) ->
     {
         Err(io::Error::other(
             "screen-mode relaunch unsupported on this platform",
+        ))
+    }
+}
+
+/// Rebuild argv (without the binary name) for relaunching into `provider`.
+///
+/// `None` selects the native Grok agent and simply omits `--provider`. The
+/// relaunch deliberately starts a new session: session-selection flags and
+/// the bare positional prompt are stripped and nothing is rebound, because an
+/// ACP session belongs to the provider that created it and cannot continue
+/// across a provider switch.
+///
+/// The current screen mode flags are kept as-is — a provider switch must not
+/// silently change how the TUI renders.
+pub(crate) fn build_provider_relaunch_args(
+    current_args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+    provider_id: Option<&str>,
+) -> Vec<OsString> {
+    let mut out = strip_relaunch_args(
+        current_args,
+        RelaunchArgFilter {
+            drop_screen_mode: false,
+            drop_provider: true,
+        },
+    );
+    if let Some(id) = provider_id {
+        out.push(OsString::from("--provider"));
+        out.push(OsString::from(id));
+    }
+    out
+}
+
+/// Pasteable shell command when a provider re-exec fails.
+pub(crate) fn provider_relaunch_hint(provider_id: Option<&str>) -> String {
+    match provider_id {
+        Some(id) => format!("grok --provider {id}"),
+        None => "grok".to_string(),
+    }
+}
+
+/// Replace the current process with a relaunch on the selected provider.
+///
+/// Same process lifecycle as [`exec_screen_mode_relaunch`]: Unix `exec`s;
+/// Windows spawns on the inherited console and parks the parent in `wait`. On
+/// success this never returns; on failure the IO error is returned so the
+/// caller can print a hint.
+pub(crate) fn exec_provider_relaunch(
+    provider_id: Option<&str>,
+    display_label: &str,
+    want_minimal: bool,
+) -> io::Result<()> {
+    let exe = std::env::current_exe()?;
+    let args = build_provider_relaunch_args(std::env::args_os(), provider_id);
+
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.args(&args);
+    // Preserve the resolved screen mode across the switch; without this a
+    // relaunch could land in a different mode than the user was just using.
+    cmd.env(GROK_SCREEN_MODE_ENV, screen_mode_env_value(want_minimal));
+
+    eprintln!("Switching to {display_label}… (starting a new session)");
+    let _ = io::stdout().flush();
+    let _ = io::stderr().flush();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = cmd.exec();
+        // `exec` only returns on failure.
+        Err(io::Error::other(format!(
+            "failed to exec provider relaunch: {err}"
+        )))
+    }
+
+    #[cfg(windows)]
+    {
+        // See `exec_screen_mode_relaunch` for why the parent must wait rather
+        // than exit immediately after spawning on the inherited console.
+        cmd.stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit());
+        // SAFETY: FFI with a null handler pointer, documented by the Console
+        // API to mean "ignore Ctrl+C in this process"; called once, before
+        // the child exists, from the only surviving thread of a quiesced
+        // event loop.
+        unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 1);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        #[allow(clippy::disallowed_methods)] // the parent waits and exits with its status
+        let mut child = cmd.spawn()?;
+        let status = child.wait()?;
+        std::process::exit(status.code().unwrap_or(0));
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err(io::Error::other(
+            "provider relaunch unsupported on this platform",
         ))
     }
 }

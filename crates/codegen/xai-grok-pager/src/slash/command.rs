@@ -12,6 +12,7 @@
 use crate::acp::model_state::ModelState;
 use crate::app::actions::Action;
 use crate::app::bundle::BundleState;
+use crate::app::provider_catalog::ProviderCatalog;
 use crate::slash::mode_support::ModeSupport;
 use agent_client_protocol as acp;
 
@@ -231,6 +232,28 @@ pub trait SlashCommand: Send + Sync {
     #[allow(unused_variables)]
     fn suggest_args(&self, ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
         None
+    }
+
+    /// Provider-aware argument suggestions.
+    ///
+    /// The catalog is passed separately so shared slash context structs stay
+    /// free of provider state. Only `/provider` overrides this; every other
+    /// command falls back to [`SlashCommand::suggest_args`].
+    #[allow(unused_variables)]
+    fn suggest_provider_args(
+        &self,
+        ctx: &AppCtx,
+        catalog: &ProviderCatalog,
+        args_query: &str,
+    ) -> Option<Vec<ArgItem>> {
+        self.suggest_args(ctx, args_query)
+    }
+
+    /// Whether an arg suggestion row can be selected. Defaults to `true`;
+    /// `/provider` overrides this for missing launch commands.
+    #[allow(unused_variables)]
+    fn arg_item_selectable(&self, catalog: &ProviderCatalog, item: &ArgItem) -> bool {
+        true
     }
 
     /// Whether this command is currently visible / executable.

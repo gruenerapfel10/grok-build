@@ -46,6 +46,7 @@ pub mod personas;
 pub mod plan;
 pub mod plugin;
 pub mod privacy;
+pub mod provider;
 pub mod queue;
 pub mod recap;
 pub mod release_notes;
@@ -98,6 +99,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(screen_mode_switch::ScreenModeSwitchCommand::minimal()),
         Arc::new(screen_mode_switch::ScreenModeSwitchCommand::fullscreen()),
         Arc::new(model::ModelCommand),
+        Arc::new(provider::ProviderCommand),
         Arc::new(effort::EffortCommand),
         Arc::new(always_approve::AlwaysApproveCommand),
         Arc::new(auto::AutoCommand),

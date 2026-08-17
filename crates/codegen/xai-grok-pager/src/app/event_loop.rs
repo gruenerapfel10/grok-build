@@ -182,6 +182,9 @@ pub(crate) struct RunResult {
     /// When set, the process should re-exec into the other screen mode after
     /// terminal restore. See `/minimal` and `/fullscreen`.
     pub relaunch: Option<super::app_view::ScreenModeRelaunch>,
+    /// When set, the process should re-exec onto another provider after
+    /// terminal restore. Starts a new session by design.
+    pub provider_relaunch: Option<super::app_view::ProviderRelaunch>,
 }
 
 /// In-flight reconnect re-initialization, tied to the agents whose reload
@@ -952,6 +955,14 @@ pub(crate) async fn run(
     let launch_effective_ui = xai_grok_shell::config::load_effective_config()
         .ok()
         .and_then(|root| root.get("ui").cloned());
+    // Provider catalog for the picker. Separate read: the line above keeps
+    // only the `[ui]` subtree, and the catalog needs `[external_providers]`.
+    app.provider_catalog = xai_grok_shell::config::load_effective_config()
+        .map(|root| {
+            crate::app::provider_catalog::ProviderCatalog::load(&root, args.provider.as_deref())
+        })
+        .unwrap_or_default();
+    app.sync_provider_catalog_to_slash_surfaces();
     // Soft-default owns the mode only when neither CLI nor effective TOML
     // claimed it; while owned, `settings/update` pushes may re-arm it.
     let cli_owns_mode = args.yolo || args.permission_mode_flag.is_some();
@@ -3276,6 +3287,7 @@ fn finish_run(app: &mut AppView) -> RunResult {
         exit_info,
         quit_for_update: app.quit_for_update,
         relaunch: app.relaunch.clone(),
+        provider_relaunch: app.provider_relaunch.clone(),
     }
 }
 

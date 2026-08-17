@@ -425,6 +425,10 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
             &app.active_announcements,
             &app.tier_restricted_commands,
         );
+        agent
+            .prompt
+            .slash_controller
+            .set_provider_catalog(app.provider_catalog.clone());
         agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
         agent
             .prompt
@@ -988,6 +992,10 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
             &app.active_announcements,
             &app.tier_restricted_commands,
         );
+        agent
+            .prompt
+            .slash_controller
+            .set_provider_catalog(app.provider_catalog.clone());
         agent.chat_kind = chat_kind;
         agent.conversation_entry = chat_kind;
         #[cfg(feature = "local-workspace")]

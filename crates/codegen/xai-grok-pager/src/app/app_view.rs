@@ -594,6 +594,17 @@ pub struct ScreenModeRelaunch {
     /// Active session to reopen via `--resume`.
     pub session_id: String,
 }
+/// Pending re-exec onto another agent provider.
+///
+/// Deliberately carries no session id: an ACP session belongs to the provider
+/// that created it, so a switch starts a new session.
+#[derive(Debug, Clone)]
+pub struct ProviderRelaunch {
+    /// `--provider` value; `None` relaunches the native Grok agent.
+    pub provider_id: Option<String>,
+    /// Display label for the "Switching to …" line.
+    pub label: String,
+}
 /// Root view component — owns all application state.
 pub struct AppView {
     /// Taken by whichever path reaches a usable session (or interactive idle) first.
@@ -1182,6 +1193,12 @@ pub struct AppView {
     /// other screen mode. Driven by `/minimal` and `/fullscreen`. Captures the
     /// session id at action time so a later teardown cannot drop `--resume`.
     pub relaunch: Option<ScreenModeRelaunch>,
+    /// Ordered provider catalog backing the provider picker. Loaded at
+    /// startup; empty until then.
+    pub provider_catalog: crate::app::provider_catalog::ProviderCatalog,
+    /// When set, the event loop should exit and the process re-exec onto the
+    /// selected provider. Driven by `Action::SwitchProvider`.
+    pub provider_relaunch: Option<ProviderRelaunch>,
     /// Whether importable `.claude/` settings were detected at startup.
     pub has_claude_import: bool,
     /// When set, the welcome screen renders an interactive import modal instead of normal content.
@@ -1429,6 +1446,27 @@ impl AppView {
                 .set_usage_command_visible(usage_cmd);
         }
     }
+    /// Mirror `provider_catalog` onto every slash surface.
+    pub(crate) fn sync_provider_catalog_to_slash_surfaces(&mut self) {
+        let catalog = self.provider_catalog.clone();
+        self.welcome_prompt
+            .slash_controller
+            .set_provider_catalog(catalog.clone());
+        for agent in self.agents.values_mut() {
+            agent
+                .prompt
+                .slash_controller
+                .set_provider_catalog(catalog.clone());
+        }
+        if let Some(dash) = self.dashboard.as_mut() {
+            dash.dispatch
+                .slash_controller
+                .set_provider_catalog(catalog.clone());
+            dash.peek_reply
+                .slash_controller
+                .set_provider_catalog(catalog);
+        }
+    }
     /// Force voice on for API-key sessions when only a remote rule left it off.
     /// Requirement / env / config pins still win.
     pub(crate) fn ensure_voice_for_api_key(&mut self) {
@@ -1638,6 +1676,8 @@ impl AppView {
             foreign_resume_launch: None,
             quit_for_update: false,
             relaunch: None,
+            provider_catalog: Default::default(),
+            provider_relaunch: None,
             has_claude_import: false,
             import_claude_modal: None,
             welcome_doc_viewer: None,

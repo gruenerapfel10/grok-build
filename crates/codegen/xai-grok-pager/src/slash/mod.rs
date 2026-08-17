@@ -55,6 +55,8 @@ pub struct SuggestionRow {
     pub tag: Option<String>,
     /// Provenance badge; `Some` only on rows in a builtin/skill name collision.
     pub provenance: Option<CommandProvenance>,
+    /// When false the row is dimmed and cannot be accepted.
+    pub selectable: bool,
 }
 
 impl SuggestionRow {
@@ -74,10 +76,11 @@ impl SuggestionRow {
             indices: Vec::new(),
             tag: None,
             provenance: collides_with_builtin_or_skill.then(|| trigger.provenance.clone()),
+            selectable: true,
         }
     }
 
-    fn from_arg(item: &ArgItem) -> Self {
+    fn from_arg(item: &ArgItem, selectable: bool) -> Self {
         Self {
             display: item.display.clone(),
             description: item.description.clone(),
@@ -85,6 +88,7 @@ impl SuggestionRow {
             indices: Vec::new(),
             tag: None,
             provenance: None,
+            selectable,
         }
     }
 
@@ -322,6 +326,8 @@ pub struct SlashController {
     /// and the dashboard share one map; defaults to empty for tests and any
     /// surface that has not been wired up.
     command_tags: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, String>>>,
+    /// Cached provider catalog for `/provider` suggestions.
+    provider_catalog: crate::app::provider_catalog::ProviderCatalog,
 }
 
 impl SlashController {
@@ -355,7 +361,18 @@ impl SlashController {
             command_tags: std::rc::Rc::new(std::cell::RefCell::new(
                 std::collections::HashMap::new(),
             )),
+            provider_catalog: crate::app::provider_catalog::ProviderCatalog::default(),
         }
+    }
+
+    /// Replace the cached provider catalog (from `AppView::provider_catalog`).
+    pub fn set_provider_catalog(&mut self, catalog: crate::app::provider_catalog::ProviderCatalog) {
+        self.provider_catalog = catalog;
+    }
+
+    /// Cached provider catalog backing `/provider` suggestions.
+    pub fn provider_catalog(&self) -> &crate::app::provider_catalog::ProviderCatalog {
+        &self.provider_catalog
     }
 
     /// Replace the MRU store with a shared one. Used by `AppView` to inject the
@@ -1159,15 +1176,24 @@ impl SlashController {
         if !command.takes_args_now(&ctx) {
             return Vec::new();
         }
-        let Some(items) = command.suggest_args(&ctx, query) else {
+        let catalog = &self.provider_catalog;
+        let Some(items) = command.suggest_provider_args(&ctx, catalog, query) else {
             return Vec::new();
         };
         if items.is_empty() {
             return Vec::new();
         }
+        let selectables: Vec<bool> = items
+            .iter()
+            .map(|item| command.arg_item_selectable(catalog, item))
+            .collect();
         let trimmed = query.trim();
         if trimmed.is_empty() {
-            return items.iter().map(SuggestionRow::from_arg).collect();
+            return items
+                .iter()
+                .zip(selectables.iter())
+                .map(|(item, &selectable)| SuggestionRow::from_arg(item, selectable))
+                .collect();
         }
         let hits = self
             .matcher
@@ -1176,7 +1202,8 @@ impl SlashController {
             });
         hits.into_iter()
             .map(|(idx, _)| {
-                let mut row = SuggestionRow::from_arg(&items[idx]);
+                let item = &items[idx];
+                let mut row = SuggestionRow::from_arg(item, selectables[idx]);
                 row.indices = self.argument_highlight_indices(trimmed, &row.display);
                 row
             })

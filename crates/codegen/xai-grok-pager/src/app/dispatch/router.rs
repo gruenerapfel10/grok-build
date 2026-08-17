@@ -136,6 +136,14 @@ pub(super) fn dispatch_copy_auth_url(
         generation: app.auth_clipboard_feedback_generation,
     }]
 }
+/// Show a system line in the active agent's scrollback, if there is one.
+fn push_active_system_message(app: &mut AppView, message: String) {
+    if let Some(agent) = get_active_agent_mut(app) {
+        agent
+            .scrollback
+            .push_block(crate::scrollback::block::RenderBlock::system(message));
+    }
+}
 /// Dispatch an action: mutate state, return effects to execute.
 ///
 /// The returned `Vec<Effect>` may be empty (pure state mutation) or contain
@@ -188,6 +196,32 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                     session_id,
                 });
             }
+            let mut effects = unregister_all_active_sessions(app);
+            effects.push(Effect::Quit);
+            effects
+        }
+        Action::SwitchProvider { query } => {
+            let Some(entry) = app.provider_catalog.resolve(&query) else {
+                tracing::warn!("provider switch: unknown provider {query:?}");
+                push_active_system_message(app, format!("Unknown provider: {query}"));
+                return vec![];
+            };
+            if !entry.command_status.is_selectable() {
+                let label = entry.label.clone();
+                tracing::warn!(
+                    "provider switch: {} command not found",
+                    entry.selection.catalog_id()
+                );
+                push_active_system_message(app, format!("{label}: not installed"));
+                return vec![];
+            }
+            if entry.active {
+                return vec![];
+            }
+            app.provider_relaunch = Some(crate::app::app_view::ProviderRelaunch {
+                provider_id: entry.selection.provider_id().map(str::to_owned),
+                label: entry.label.clone(),
+            });
             let mut effects = unregister_all_active_sessions(app);
             effects.push(Effect::Quit);
             effects

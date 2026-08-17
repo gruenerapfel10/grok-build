@@ -45,6 +45,7 @@ mod inline_edit;
 mod leader_cluster;
 mod modals;
 mod mouse;
+pub(crate) mod provider_catalog;
 mod queue_edit;
 pub(crate) mod screen_mode_relaunch;
 mod session_load_barrier;
@@ -1066,7 +1067,13 @@ pub async fn run(
     .await;
     signal_handler::clear_quit_notify();
     let forced_exit_code = match &result {
-        Ok(run_result) if run_result.quit_for_update || run_result.relaunch.is_some() => None,
+        Ok(run_result)
+            if run_result.quit_for_update
+                || run_result.relaunch.is_some()
+                || run_result.provider_relaunch.is_some() =>
+        {
+            None
+        }
         Ok(_) => Some(0),
         Err(_) => Some(1),
     };
@@ -1112,6 +1119,18 @@ pub async fn run(
                         relaunch.minimal,
                         &mut io::stderr(),
                     );
+                }
+                return Ok(false);
+            }
+            if let Some(provider_relaunch) = run_result.provider_relaunch.as_ref() {
+                let provider_id = provider_relaunch.provider_id.as_deref();
+                if let Err(e) = screen_mode_relaunch::exec_provider_relaunch(
+                    provider_id,
+                    &provider_relaunch.label,
+                    screen_mode.is_minimal(),
+                ) {
+                    tracing::error!(error = %e, "provider relaunch failed");
+                    print_provider_relaunch_failure_hint(&e, provider_id, &mut io::stderr());
                 }
                 return Ok(false);
             }
@@ -1167,6 +1186,21 @@ fn print_relaunch_failure_hint(
         w,
         "  {}",
         screen_mode_relaunch::screen_mode_relaunch_resume_hint(session_id, want_minimal),
+    );
+}
+/// Provider relaunch failure fallback (the switch starts a new session, so the
+/// hint is a plain launch command rather than a resume).
+fn print_provider_relaunch_failure_hint(
+    error: &impl std::fmt::Display,
+    provider_id: Option<&str>,
+    w: &mut impl Write,
+) {
+    let _ = writeln!(w, "Failed to switch provider: {error}");
+    let _ = writeln!(w, "Start the selected provider with:");
+    let _ = writeln!(
+        w,
+        "  {}",
+        screen_mode_relaunch::provider_relaunch_hint(provider_id),
     );
 }
 /// Write raw CSI sequences to disable mouse tracking and bracketed paste.

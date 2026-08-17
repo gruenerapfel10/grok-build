@@ -1252,6 +1252,9 @@ impl PromptWidget {
         let Some(row) = snap.selection() else {
             return false;
         };
+        if !row.selectable {
+            return false;
+        }
         let insert_text = row.insert_text.clone();
         let record_mru = snap.cursor_in_command;
         let mru_record = if record_mru {

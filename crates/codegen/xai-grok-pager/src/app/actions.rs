@@ -47,6 +47,14 @@ pub enum Action {
     RelaunchInScreenMode {
         minimal: bool,
     },
+    /// Re-exec on another agent provider, starting a new session.
+    ///
+    /// `query` is either a [`crate::app::provider_catalog::ProviderEntry`] id
+    /// (`"grok"` selects the native agent) or typed label text. The router
+    /// resolves it against the live catalog.
+    SwitchProvider {
+        query: String,
+    },
     /// Quit without double-press confirmation (e.g., from command palette or pre-login screens).
     QuitConfirmed,
     /// Create a new session from the welcome screen.

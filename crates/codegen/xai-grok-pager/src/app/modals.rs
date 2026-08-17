@@ -45,7 +45,7 @@ impl AgentView {
         active_modal: &mut Option<ActiveModal>,
         slash_controller: &crate::slash::SlashController,
         models: &crate::acp::model_state::ModelState,
-        cwd: &std::path::Path,
+        _cwd: &std::path::Path,
     ) -> bool {
         let Some(ActiveModal::ArgPicker {
             command,
@@ -62,16 +62,7 @@ impl AgentView {
         let Some(cmd) = slash_controller.registry().get(&command) else {
             return false;
         };
-        let ctx = crate::slash::command::AppCtx {
-            models,
-            cwd,
-            has_session_announcements: slash_controller.has_session_announcements(),
-            billing_surface_visible: slash_controller.billing_surface_visible(),
-            usage_command_visible: slash_controller.usage_command_visible(),
-            workflows_available: slash_controller.workflows_available(),
-            screen_mode: slash_controller.screen_mode(),
-            current_title: slash_controller.current_title(),
-        };
+        let ctx = slash_controller.app_ctx(models);
         let Some(model_items) = cmd.suggest_args(&ctx, "") else {
             return false;
         };
@@ -593,6 +584,21 @@ impl AgentView {
             }) => (command.clone(), !args_query.is_empty(), items.len()),
             _ => return InputOutcome::Changed,
         };
+        let catalog = self.prompt.slash_controller.provider_catalog();
+        let arg_selectable = |item: &crate::slash::command::ArgItem| {
+            self.prompt
+                .slash_controller
+                .registry()
+                .get(&command_clone)
+                .map(|cmd| cmd.arg_item_selectable(catalog, item))
+                .unwrap_or(true)
+        };
+        let non_selectable: Vec<bool> = match self.active_modal.as_ref() {
+            Some(ActiveModal::ArgPicker { items, .. }) => {
+                items.iter().map(|item| !arg_selectable(item)).collect()
+            }
+            _ => Vec::new(),
+        };
 
         let config = PickerConfig {
             title: None,
@@ -601,7 +607,7 @@ impl AgentView {
             esc_clears_query: false,
             shortcuts: Some(crate::views::picker::picker_shortcuts()),
             pending_hint: None,
-            non_selectable: &[],
+            non_selectable: &non_selectable,
             non_selectable_clickable: &[],
             shortcuts_area: None,
             tabs: None,
@@ -910,15 +916,19 @@ impl AgentView {
                                     return InputOutcome::Action(Action::FetchSessionList);
                                 }
 
-                                let is_picker =
-                                    matches!(trimmed.as_str(), "model" | "m" | "theme" | "t");
+                                let is_picker = matches!(
+                                    trimmed.as_str(),
+                                    "model" | "m" | "theme" | "t" | "provider" | "p"
+                                );
                                 if is_picker
                                     && let Some(command) =
                                         self.prompt.slash_controller.registry().get(&trimmed)
                                 {
                                     let ctx =
                                         self.prompt.slash_controller.app_ctx(&self.session.models);
-                                    if let Some(items) = command.suggest_args(&ctx, "")
+                                    let catalog = self.prompt.slash_controller.provider_catalog();
+                                    if let Some(items) =
+                                        command.suggest_provider_args(&ctx, catalog, "")
                                         && !items.is_empty()
                                     {
                                         // Save palette state for Esc restore.
@@ -1904,8 +1914,20 @@ impl AgentView {
                     "model" | "m" if !args_query.is_empty() => "Pick reasoning effort",
                     "model" | "m" => "Pick model",
                     "theme" | "t" => "Pick theme",
+                    "provider" | "p" => "Pick provider",
                     _ => "Pick option",
                 };
+                let catalog = self.prompt.slash_controller.provider_catalog();
+                let arg_selectable = |item: &crate::slash::command::ArgItem| {
+                    self.prompt
+                        .slash_controller
+                        .registry()
+                        .get(command.as_str())
+                        .map(|cmd| cmd.arg_item_selectable(catalog, item))
+                        .unwrap_or(true)
+                };
+                let non_selectable: Vec<bool> =
+                    items.iter().map(|item| !arg_selectable(item)).collect();
                 let picker_entries: Vec<PickerEntry> = items
                     .iter()
                     .enumerate()
@@ -1919,7 +1941,7 @@ impl AgentView {
                             fields: &[],
                             description_lines: &[],
                             summary_lines: &[],
-                            dimmed: false,
+                            dimmed: !arg_selectable(item),
                             indent: 0,
                             badge: "",
                             badge_color: None,
@@ -1957,7 +1979,7 @@ impl AgentView {
                         &theme,
                         state,
                         &picker_entries,
-                        &[],
+                        &non_selectable,
                         false,
                     );
                 }

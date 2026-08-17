@@ -323,6 +323,11 @@ fn build_item_lines(
     } else {
         Modifier::empty()
     };
+    let dim = if item.selectable {
+        Modifier::empty()
+    } else {
+        Modifier::DIM
+    };
 
     let embed = crate::views::modal_window::embedded_row_style(theme, is_selected);
     let primary_fg = embed.map_or(theme.text_primary, |e| e.fg(theme.text_primary));
@@ -331,9 +336,12 @@ fn build_item_lines(
     let normal_style = Style::default()
         .fg(primary_fg)
         .bg(row_bg)
-        .add_modifier(bold);
-    let match_style = Style::default().fg(match_fg).bg(row_bg).add_modifier(bold);
-    let desc_style = Style::default().fg(desc_fg).bg(row_bg);
+        .add_modifier(bold | dim);
+    let match_style = Style::default()
+        .fg(match_fg)
+        .bg(row_bg)
+        .add_modifier(bold | dim);
+    let desc_style = Style::default().fg(desc_fg).bg(row_bg).add_modifier(dim);
     let bg_style = Style::default().bg(row_bg);
     let tag_style = Style::default().fg(theme.accent_system).bg(row_bg);
 

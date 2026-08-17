@@ -73,6 +73,14 @@ pub(super) fn ensure_dashboard_state(app: &mut AppView) {
         .peek_reply
         .slash_controller
         .set_usage_command_visible(usage_cmd);
+    state
+        .dispatch
+        .slash_controller
+        .set_provider_catalog(app.provider_catalog.clone());
+    state
+        .peek_reply
+        .slash_controller
+        .set_provider_catalog(app.provider_catalog.clone());
     app.dashboard = Some(state);
 }
 
